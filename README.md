@@ -73,23 +73,28 @@ documented in the install-gentoo guide).
 
 ## Compositor key bindings
 
-The daemon stays out of the way when something else writes the
-brightness file. Bind `XF86MonBrightnessUp`/`Down` to `brightnessctl`
-normally; the daemon detects the external write and yields the channel
-until ambient changes again.
+The daemon doesn't replace existing brightness key handling. Whatever
+your compositor or shell currently does on
+`XF86MonBrightnessUp`/`Down` keeps working — the daemon just observes
+the resulting sysfs write and yields the channel until ambient light
+shifts significantly.
 
-niri (`~/.config/niri/config.kdl`):
+- **niri + DankMaterialShell / KDE / GNOME / sway**: handled by the
+  shell or desktop environment. Nothing to add.
+- **Bare niri (or any compositor without built-in brightness handling)**:
+  bind to `brightnessctl` in `~/.config/niri/config.kdl`:
 
-```kdl
-binds {
-    XF86MonBrightnessUp   { spawn "brightnessctl" "set" "5%+"; }
-    XF86MonBrightnessDown { spawn "brightnessctl" "set" "5%-"; }
+  ```kdl
+  binds {
+      XF86MonBrightnessUp   { spawn "brightnessctl" "set" "5%+"; }
+      XF86MonBrightnessDown { spawn "brightnessctl" "set" "5%-"; }
+  }
+  ```
 
-    // M1 Pro has no dedicated keyboard-backlight key — pick a binding:
-    Mod+F1 { spawn "brightnessctl" "--device=kbd_backlight" "set" "10%-"; }
-    Mod+F2 { spawn "brightnessctl" "--device=kbd_backlight" "set" "10%+"; }
-}
-```
+**Keyboard backlight**: M1 Pro and most Apple Silicon laptops have no
+dedicated kbd-backlight key. If you want manual override on top of the
+daemon's auto control, pick a binding (e.g. `Mod+F1`/`Mod+F2`) and
+call `brightnessctl --device=kbd_backlight set 10%-/+`.
 
 ## Tuning
 
