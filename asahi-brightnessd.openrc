@@ -1,0 +1,13 @@
+#!/sbin/openrc-run
+# OpenRC init script for asahi-brightnessd
+
+command="/usr/sbin/asahi-brightnessd"
+command_background="yes"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/${RC_SVCNAME}.log"
+error_log="/var/log/${RC_SVCNAME}.log"
+
+depend() {
+	need localmount
+	after udev
+}
