@@ -25,7 +25,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -58,6 +61,15 @@
  * curve is unaffected — visibility in the dark is power-source neutral. */
 #define AC_SCREEN_BOOST    30
 #define AC_RECHECK_TICKS   30       /* poll AC status ~1 Hz */
+
+/* When a Noctalia shell is running, fire a brightness-suppress IPC just
+ * before each screen-channel sysfs write so its OSD stays quiet for
+ * ALS-driven adjustments. 100 ms covers a few poll ticks of headroom; if
+ * Noctalia isn't reachable the call fails silently and the daemon keeps
+ * driving the backlight. */
+#define NOCTALIA_SUPPRESS_MS   100
+#define NOCTALIA_SOCK_PREFIX   "noctalia-"
+#define NOCTALIA_USER_ROOT     "/run/user"
 
 /* lux → percentage curves (linearly interpolated) */
 typedef struct { int lux; int pct; } curve_point;
@@ -108,6 +120,10 @@ static channel_state kbd_state    = { -1, false, 0 };
 
 static bool g_on_ac = false;
 static int  g_ac_recheck = 0;
+
+/* Cached Noctalia IPC socket path. Empty string means "unknown / not running".
+ * Re-discovered on the next call after a connect failure. */
+static char g_noctalia_sock[PATH_MAX] = "";
 
 /* ------------------------------------------------------------------ */
 /* Signals                                                            */
@@ -166,6 +182,82 @@ static int locate_als(char *out, size_t outsz) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Noctalia IPC                                                       */
+/* ------------------------------------------------------------------ */
+
+/* Find the first /run/user/<uid>/noctalia-*.sock and copy the absolute path
+ * into out. Returns 0 on success. */
+static int find_noctalia_socket(char *out, size_t outsz) {
+    DIR *d = opendir(NOCTALIA_USER_ROOT);
+    if (!d) return -1;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        char user_dir[PATH_MAX];
+        int n = snprintf(user_dir, sizeof(user_dir), "%s/%s",
+                         NOCTALIA_USER_ROOT, de->d_name);
+        if (n < 0 || (size_t)n >= sizeof(user_dir)) continue;
+        DIR *ud = opendir(user_dir);
+        if (!ud) continue;
+        struct dirent *ude;
+        while ((ude = readdir(ud)) != NULL) {
+            if (strncmp(ude->d_name, NOCTALIA_SOCK_PREFIX,
+                        sizeof(NOCTALIA_SOCK_PREFIX) - 1) != 0) continue;
+            size_t len = strlen(ude->d_name);
+            if (len < 5 || strcmp(ude->d_name + len - 5, ".sock") != 0) continue;
+            n = snprintf(out, outsz, "%s/%s", user_dir, ude->d_name);
+            closedir(ud);
+            closedir(d);
+            return (n > 0 && (size_t)n < outsz) ? 0 : -1;
+        }
+        closedir(ud);
+    }
+    closedir(d);
+    return -1;
+}
+
+/* Fire-and-forget: ask Noctalia to suppress its brightness OSD for `ms`.
+ * Blocks briefly (≤50 ms) on the socket round-trip so the suppression
+ * window is established before the sysfs write fires inotify. Failures
+ * (no socket, connect refused, etc.) are silently ignored. */
+static void noctalia_suppress_osd(int ms) {
+    if (g_noctalia_sock[0] == '\0') {
+        if (find_noctalia_socket(g_noctalia_sock,
+                                 sizeof(g_noctalia_sock)) != 0) {
+            return;
+        }
+    }
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return;
+    int flags = fcntl(fd, F_GETFD);
+    if (flags >= 0) (void)fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 50000 };
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, g_noctalia_sock, sizeof(addr.sun_path) - 1);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        /* Stale path (compositor restart/exit). Invalidate so the next
+         * call rediscovers — or, if noctalia is gone, gives up cheaply. */
+        g_noctalia_sock[0] = '\0';
+        close(fd);
+        return;
+    }
+    char cmd[64];
+    int n = snprintf(cmd, sizeof(cmd), "brightness-suppress %d\n", ms);
+    if (n > 0) {
+        ssize_t w = write(fd, cmd, (size_t)n);
+        (void)w;
+        char buf[32];
+        ssize_t r = read(fd, buf, sizeof(buf));  /* wait for response */
+        (void)r;
+    }
+    close(fd);
+}
+
+/* ------------------------------------------------------------------ */
 /* Curve evaluation                                                   */
 /* ------------------------------------------------------------------ */
 static int interpolate(const curve_point *curve, size_t n, int lux) {
@@ -219,10 +311,14 @@ static bool lux_shifted(int lux, int baseline) {
     return (delta * 100 / baseline) >= LUX_RESUME_PCT;
 }
 
-/* Update one channel: detect override, compute target, step. */
+/* Update one channel: detect override, compute target, step.
+ * When `announce_to_noctalia` is true, fire a brightness-suppress IPC
+ * immediately before each sysfs write so Noctalia's OSD stays quiet for
+ * ALS-driven adjustments. */
 static void tick_channel(channel_state *st, const char *path,
                          const curve_point *curve, size_t curve_len,
-                         int max_units, int floor_pct, int boost_pct, int lux)
+                         int max_units, int floor_pct, int boost_pct, int lux,
+                         bool announce_to_noctalia)
 {
     int observed = read_int(path);
     if (observed < 0) return;
@@ -245,6 +341,9 @@ static void tick_channel(channel_state *st, const char *path,
     int next   = step_toward(observed, target, max_units);
 
     if (next != observed) {
+        if (announce_to_noctalia) {
+            noctalia_suppress_osd(NOCTALIA_SUPPRESS_MS);
+        }
         if (write_int(path, next) == 0) {
             int readback = read_int(path);
             st->last_written = readback >= 0 ? readback : next;
@@ -288,10 +387,12 @@ static int run(void) {
             int screen_boost = g_on_ac ? AC_SCREEN_BOOST : 0;
             tick_channel(&screen_state, screen_path,
                          SCREEN_CURVE, SCREEN_CURVE_LEN,
-                         screen_max, SCREEN_FLOOR_PCT, screen_boost, lux);
+                         screen_max, SCREEN_FLOOR_PCT, screen_boost, lux,
+                         true);
             tick_channel(&kbd_state, kbd_path,
                          KBD_CURVE, KBD_CURVE_LEN,
-                         kbd_max, KBD_FLOOR_PCT, 0, lux);
+                         kbd_max, KBD_FLOOR_PCT, 0, lux,
+                         false);
         }
         nanosleep(&poll_interval, NULL);
     }
