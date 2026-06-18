@@ -290,7 +290,17 @@ static void noctalia_suppress_osd(int ms) {
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, g_noctalia_sock, sizeof(addr.sun_path) - 1);
+    /* Unix domain sun_path is 108 bytes on Linux but g_noctalia_sock is
+     * PATH_MAX (4096). A path that doesn't fit can't reach the socket,
+     * and a silent strncpy truncation would point connect() at an
+     * unrelated path. Bail explicitly and invalidate the cache. */
+    size_t sock_len = strlen(g_noctalia_sock);
+    if (sock_len >= sizeof(addr.sun_path)) {
+        g_noctalia_sock[0] = '\0';
+        close(fd);
+        return;
+    }
+    memcpy(addr.sun_path, g_noctalia_sock, sock_len);  /* sun_path zero-initialised */
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         /* Stale path (compositor restart/exit). Invalidate so the next
          * call rediscovers — or, if noctalia is gone, gives up cheaply. */
