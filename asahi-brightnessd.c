@@ -41,6 +41,9 @@
 #define SCREEN_DIR  "/sys/class/backlight/apple-panel-bl"
 #define KBD_DIR     "/sys/class/leds/kbd_backlight"
 #define AC_ONLINE   "/sys/class/power_supply/macsmc-ac/online"
+#define DRM_BASE    "/sys/class/drm"
+#define DPMS_ATTR   "dpms"
+#define EDP_PREFIX  "eDP-"
 
 /* ------------------------------------------------------------------ */
 /* Tuning                                                             */
@@ -106,6 +109,7 @@ static volatile sig_atomic_t g_terminate = 0;
 static char als_path[PATH_MAX];
 static char screen_path[PATH_MAX];
 static char kbd_path[PATH_MAX];
+static char dpms_path[PATH_MAX] = "";   /* "" if no eDP connector found */
 static int  screen_max;
 static int  kbd_max;
 
@@ -151,6 +155,55 @@ static int write_int(const char *path, int val) {
     int rc = fprintf(f, "%d\n", val);
     fclose(f);
     return rc < 0 ? -1 : 0;
+}
+
+/* Find the first /sys/class/drm/cardN-eDP-* connector's dpms attribute.
+ * Used to zero the kbd backlight when the laptop panel blanks. External
+ * monitors (HDMI, DP) are deliberately ignored — they don't affect kbd
+ * visibility on the integrated keyboard.
+ *
+ * Returns 0 on success, -1 if no eDP connector exists (uncommon — e.g.
+ * desktop-style replicas without an internal panel). Non-fatal; the
+ * caller treats absence as "DPMS always on". */
+static int locate_edp_dpms(char *out, size_t outsz) {
+    DIR *d = opendir(DRM_BASE);
+    if (!d) return -1;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strncmp(de->d_name, "card", 4) != 0) continue;
+        /* Skip the bare card[0-9]* nodes; we want card[0-9]+-eDP-N. */
+        const char *dash = strchr(de->d_name + 4, '-');
+        if (!dash) continue;
+        if (strncmp(dash + 1, EDP_PREFIX, sizeof(EDP_PREFIX) - 1) != 0)
+            continue;
+        int n = snprintf(out, outsz, "%s/%s/%s",
+                         DRM_BASE, de->d_name, DPMS_ATTR);
+        if (n > 0 && (size_t)n < outsz) {
+            closedir(d);
+            return 0;
+        }
+    }
+    closedir(d);
+    return -1;
+}
+
+/* True if the located DPMS attribute reads anything other than "On".
+ * On read failure or empty path, returns false ("assume on" — safer:
+ * an unreachable DPMS file shouldn't force the kbd backlight off and
+ * leave the user typing in the dark). */
+static bool dpms_is_off(const char *path) {
+    if (path[0] == '\0') return false;
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    char buf[16] = {0};
+    if (!fgets(buf, sizeof(buf), f)) {
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+    char *nl = strchr(buf, '\n');
+    if (nl) *nl = '\0';
+    return strcmp(buf, "On") != 0;
 }
 
 /* Find the iio:deviceN whose `name` attribute matches ALS_NAME. */
@@ -375,24 +428,43 @@ static int run(void) {
                 "(no iio:device* with name=%s)\n", ALS_NAME);
         return 1;
     }
+    /* DPMS lookup is best-effort. Without it the daemon still drives
+     * both channels from lux; it just won't zero kbd when the panel
+     * blanks. */
+    (void)locate_edp_dpms(dpms_path, sizeof(dpms_path));
     fprintf(stderr,
-            "asahi-brightnessd: als=%s screen_max=%d kbd_max=%d\n",
-            als_path, screen_max, kbd_max);
+            "asahi-brightnessd: als=%s screen_max=%d kbd_max=%d dpms=%s\n",
+            als_path, screen_max, kbd_max,
+            dpms_path[0] ? dpms_path : "(none)");
 
     struct timespec poll_interval = { .tv_sec = 0, .tv_nsec = POLL_NSEC };
     while (!g_terminate) {
         refresh_ac_status();
         int lux = read_int(als_path);
         if (lux >= 0) {
-            int screen_boost = g_on_ac ? AC_SCREEN_BOOST : 0;
-            tick_channel(&screen_state, screen_path,
-                         SCREEN_CURVE, SCREEN_CURVE_LEN,
-                         screen_max, SCREEN_FLOOR_PCT, screen_boost, lux,
-                         true);
-            tick_channel(&kbd_state, kbd_path,
-                         KBD_CURVE, KBD_CURVE_LEN,
-                         kbd_max, KBD_FLOOR_PCT, 0, lux,
-                         false);
+            if (dpms_is_off(dpms_path)) {
+                /* Panel is blanked. Force kbd off and skip the screen
+                 * channel — writes to apple-panel-bl while the panel is
+                 * dark are wasted, and the kernel preserves the value
+                 * for when DPMS resumes. Clearing override_active means
+                 * a manual kbd setting from before idle doesn't fight
+                 * the forced zero on the way down. */
+                int observed = read_int(kbd_path);
+                if (observed > 0 && write_int(kbd_path, 0) == 0) {
+                    kbd_state.last_written = 0;
+                    kbd_state.override_active = false;
+                }
+            } else {
+                int screen_boost = g_on_ac ? AC_SCREEN_BOOST : 0;
+                tick_channel(&screen_state, screen_path,
+                             SCREEN_CURVE, SCREEN_CURVE_LEN,
+                             screen_max, SCREEN_FLOOR_PCT, screen_boost, lux,
+                             true);
+                tick_channel(&kbd_state, kbd_path,
+                             KBD_CURVE, KBD_CURVE_LEN,
+                             kbd_max, KBD_FLOOR_PCT, 0, lux,
+                             false);
+            }
         }
         nanosleep(&poll_interval, NULL);
     }
