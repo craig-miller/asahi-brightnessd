@@ -71,7 +71,7 @@
  * Noctalia isn't reachable the call fails silently and the daemon keeps
  * driving the backlight. */
 #define NOCTALIA_SUPPRESS_MS   100
-#define NOCTALIA_SOCK_PREFIX   "noctalia-"
+#define NOCTALIA_SOCK_PREFIX   "noctalia-wayland-"
 #define NOCTALIA_USER_ROOT     "/run/user"
 
 /* lux → percentage curves (linearly interpolated) */
