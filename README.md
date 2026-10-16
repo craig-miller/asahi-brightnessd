@@ -107,9 +107,9 @@ All tunables are compile-time constants at the top of
 | `SMOOTH_SHIFT`      | `4`           | Exponential smoothing exponent. Per-tick move = `delta >> SMOOTH_SHIFT`. Higher = slower & smoother. |
 | `LUX_RESUME_PCT`    | `75`          | Lux delta (%) needed to clear an override.                              |
 | `LUX_RESUME_ABS`    | `5`           | Absolute lux floor for override-clear (matters in dark conditions).     |
-| `SCREEN_CURVE[]`    | 10 points     | lux → screen brightness percentage. Lifted from juicecultus/auto-brightness. |
+| `SCREEN_CURVE[]`    | 10 points     | lux → screen brightness percentage. Low-light tuning: 25% at 0 lux, 30% at 5 lux; original curve from 100 lux upward. |
 | `KBD_CURVE[]`       | 5 points      | lux → keyboard backlight percentage (inverse).                          |
-| `SCREEN_FLOOR_PCT`  | `2`           | Minimum screen brightness — prevents fully-dark screen.                 |
+| `SCREEN_FLOOR_PCT`  | `25`          | Minimum screen brightness — comfortable in darkness.                 |
 | `KBD_FLOOR_PCT`     | `0`           | Minimum keyboard backlight.                                             |
 | `AC_SCREEN_BOOST`   | `30`          | Percentage-point bump added to screen target when on AC, clamped to 100.|
 | `AC_RECHECK_TICKS`  | `30`          | How often to re-read AC state (in ticks). 30 ticks @ 30 Hz = 1 Hz.      |

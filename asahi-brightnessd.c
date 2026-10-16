@@ -56,7 +56,7 @@
 #define LUX_RESUME_PCT     75       /* % delta to resume after override */
 #define LUX_RESUME_ABS     5        /* absolute lux delta floor         */
 
-#define SCREEN_FLOOR_PCT   2        /* never let screen go fully dark   */
+#define SCREEN_FLOOR_PCT   25       /* comfortable minimum in darkness  */
 #define KBD_FLOOR_PCT      0
 
 /* When plugged into AC, scale the screen curve up by this many percentage
@@ -78,11 +78,11 @@
 typedef struct { int lux; int pct; } curve_point;
 
 static const curve_point SCREEN_CURVE[] = {
-    {   0,   2},
-    {   1,   3},
-    {   5,   6},
-    {  20,  12},
-    {  50,  24},
+    {   0,  25},
+    {   1,  26},
+    {   5,  30},
+    {  20,  33},
+    {  50,  36},
     { 100,  40},
     { 200,  60},
     { 400,  80},
