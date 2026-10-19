@@ -68,8 +68,9 @@ sudo rc-update add asahi-brightnessd default
 sudo rc-service asahi-brightnessd start
 ```
 
-On Gentoo, an ebuild lives in `craig-miller/zentoo-overlay` (and is
-documented in the install-gentoo guide).
+On Gentoo, `app-laptop/asahi-brightnessd` is available from
+[craig-miller/gentoo-overlay](https://github.com/craig-miller/gentoo-overlay).
+Setup is covered in the [Gentoo system documentation](https://github.com/craig-miller/gentoo-docs).
 
 ## Compositor key bindings
 
