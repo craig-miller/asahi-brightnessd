@@ -56,6 +56,17 @@ same smoothing loop as ambient changes.
   `/lib/firmware/apple/aop-als-cal.bin`. The
   [juicecultus/asahi-auto-brightness](https://github.com/juicecultus/asahi-auto-brightness)
   repo contains the `extract-als-cal.py` script and the recipe
+
+  The kernel requests that blob when `aop_als` probes, so a blob installed
+  after boot is invisible until the module is reloaded:
+
+  ```sh
+  sudo modprobe -r aop_als && sudo modprobe aop_als
+  cat /sys/bus/iio/devices/iio:device*/name   # want aop-sensors-als
+  ```
+
+  Until that succeeds there is no `in_illuminance_input` node and the
+  daemon exits at startup.
 - A C compiler (any working `cc`)
 
 ## Build & install (manual)
@@ -63,10 +74,32 @@ same smoothing loop as ambient changes.
 ```sh
 make
 sudo make install                                    # → /usr/sbin/asahi-brightnessd
+```
+
+Then install the service definition matching your init system. The daemon
+runs in the foreground either way; only the supervision differs.
+
+**systemd** — Fedora Asahi Remix, and most other Asahi images:
+
+```sh
+sudo install -m644 asahi-brightnessd.service /etc/systemd/system/asahi-brightnessd.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now asahi-brightnessd
+```
+
+Logs go to the journal: `journalctl -u asahi-brightnessd -f`.
+
+
+
+**OpenRC** — Gentoo:
+
+```sh
 sudo install -m755 asahi-brightnessd.openrc /etc/init.d/asahi-brightnessd
 sudo rc-update add asahi-brightnessd default
 sudo rc-service asahi-brightnessd start
 ```
+
+Logs go to `/var/log/asahi-brightnessd.log`.
 
 On Gentoo, `app-laptop/asahi-brightnessd` is available from
 [craig-miller/gentoo-overlay](https://github.com/craig-miller/gentoo-overlay).
