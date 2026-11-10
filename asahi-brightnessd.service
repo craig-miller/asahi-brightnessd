@@ -1,0 +1,13 @@
+[Unit]
+Description=Ambient-light auto-brightness for Asahi Linux
+Documentation=https://github.com/craig-miller/asahi-brightnessd
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+ExecStart=/usr/sbin/asahi-brightnessd
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
